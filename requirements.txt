@@ -1,0 +1,19 @@
+# Core image & data processing
+Pillow==10.2.0
+numpy>=1.24.0
+
+# Optional: SVG to PNG conversion (needs system cairo libs on Windows)
+# Comment out if you don't install Cairo.
+cairosvg==2.7.1
+
+# Optional: more advanced image ops / potential future augmentation
+opencv-python==4.10.0.84
+
+# For future: dataset / ML pipeline (uncomment when needed)
+# torch
+# torchvision
+# albumentations
+
+# Notes:
+# - Cairo dependency: On Windows install via MSYS2 or use pre-exported PNG glyphs.
+# - If cairosvg fails, script falls back to placeholder.

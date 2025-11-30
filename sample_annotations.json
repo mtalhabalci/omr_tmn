@@ -1,0 +1,142 @@
+[
+  {
+    "img_id": "899",
+    "bbox": [
+      275.0,
+      1469.0,
+      295.0,
+      1485.0
+    ],
+    "cat_id": [
+      "29",
+      "158"
+    ],
+    "comments": "instance:#00024a;duration:2;rel_position:-6;"
+  },
+  {
+    "img_id": "942",
+    "bbox": [
+      749.0,
+      1041.0,
+      769.0,
+      1058.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#00011d;duration:8;rel_position:7;"
+  },
+  {
+    "img_id": "333",
+    "bbox": [
+      478.0,
+      2375.0,
+      499.0,
+      2392.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#00039f;duration:8;rel_position:5;"
+  },
+  {
+    "img_id": "915",
+    "bbox": [
+      2334.0,
+      1404.0,
+      2355.0,
+      1421.0
+    ],
+    "cat_id": [
+      "25",
+      "157"
+    ],
+    "comments": "instance:#000364;duration:32;rel_position:-6;"
+  },
+  {
+    "img_id": "510",
+    "bbox": [
+      784.0,
+      1179.0,
+      804.0,
+      1196.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#000440;duration:32.;rel_position:7;"
+  },
+  {
+    "img_id": "862",
+    "bbox": [
+      801.0,
+      574.0,
+      821.0,
+      591.0
+    ],
+    "cat_id": [
+      "25",
+      "157"
+    ],
+    "comments": "instance:#00009f;duration:4;rel_position:2;"
+  },
+  {
+    "img_id": "120",
+    "bbox": [
+      1605.0,
+      1363.0,
+      1621.0,
+      1379.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#000141;duration:16;rel_position:-3;"
+  },
+  {
+    "img_id": "1712",
+    "bbox": [
+      1068.0,
+      1201.0,
+      1089.0,
+      1218.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#00023c;duration:8;rel_position:3;"
+  },
+  {
+    "img_id": "527",
+    "bbox": [
+      784.0,
+      359.0,
+      804.0,
+      376.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#000160;duration:4.;rel_position:1;"
+  },
+  {
+    "img_id": "1657",
+    "bbox": [
+      498.0,
+      1135.0,
+      518.0,
+      1152.0
+    ],
+    "cat_id": [
+      "27",
+      "157"
+    ],
+    "comments": "instance:#0002e8;duration:4.;rel_position:9;"
+  }
+]

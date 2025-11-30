@@ -1,0 +1,150 @@
+# Proje Tez Günlük Özeti (OMR + TMN Augmentation)
+
+## 1. Amaç
+Batı müziği için büyük ölçekli DeepScoresV2 veri setini Türk Müziği mikrotonal (TMN) sembolleri ile zenginleştirerek (augmentation) birleşik bir OMR (Optik Müzik Tanıma) modeli eğitmek. Hedef: Mevcut Western sembolleri + TMN mikrotonal accidentaller (ör. 1 bemol) aynı modelde tespit edilsin.
+
+## 2. Veri Seti
+- Kaynak: DeepScoresV2 (yoğun sürüm / ds2_dense) JSON + görüntüler.
+- Annotation formatı: COCO benzeri ancak kategoriler dict halinde, annotation'larda `cat_id` listesi kullanılıyor.
+- Notehead sınıfları: `noteheadBlackOnLine`, `noteheadBlackInSpace`, half/whole/double varyantları ve küçük boyutlu sürümleri.
+
+## 3. TMN Sembolleri
+- Mikrotonal semboller (koma tablosu referansı) için SVG glyph'leri oluşturuldu.
+- Kullanıcı sağladığı görsel tabloya göre net isimlendirme: Örnek: `1_bemol.svg`.
+- Şu an prototipte tek sembol: `1_bemol` (id blok: 6000).
+
+## 4. Yapılan Teknik Adımlar (Kronolojik)
+1. Proje hedefleri ve kapsam netleştirildi.
+2. DeepScores veri yapısı incelendi; kategorilerin dict olduğunun ve annotation'larda `cat_id` listesinin kullanıldığı anlaşıldı.
+3. TMN sembol gereksinimleri (mikrotonal accidentaller) listelendi.
+4. İlk örnek SVG semboller üretildi (taslak set).
+5. Kullanıcı gerçek TMN sembol görsellerini sağladı; doğrulama yapıldı.
+6. Notehead annotation'larını çıkarmak için `extract_sample_annotations.py` scripti yazıldı ve hatalar (category_id vs cat_id) düzeltilerek çalışır hale getirildi.
+7. İlk bin annotation içinde notehead eşleşmeleri bulundu; örnekler `sample_annotations.json` içine aktarıldı.
+8. Augmentation scripti (`augment_tmn_samples.py`) yazıldı; Cairo kütüphanesi eksik olduğunda fallback mekanizması (PNG veya placeholder) eklendi.
+9. Sembol pozisyonu nota başının SOLUNA, dikey merkezli olacak şekilde değiştirildi.
+10. Model stratejisi kararı: Unified tek model + ayrı kategori blok (6000+) TMN için.
+11. Injection mantığı belirlendi: Orijinal görüntüler korunacak, augmented kopya + yeni annotation + yeni kategori eklenerek birleşik JSON yazılacak.
+12. `inject_tmn_annotations.py` scripti oluşturuldu (kategori id 6000: `tmnAccidental1Bemol`).
+
+## 5. Teknik Kararlar
+- Kategori id başlangıcı: 6000 (TMN blok).
+- Unified eğitim: Western + TMN aynı model (ileride gerekirse multi-task veya attribute aşaması eklenebilir).
+- Augmentation stratejisi: Sentetik olarak TMN accidentaller ekleyip yeni görüntü + annotation üretmek.
+- Pozisyonlama: Accidentaller nota başının soluna, dikey ortalanmış; margin ayarlanabilir.
+
+## 6. Scriptler
+- `extract_sample_annotations.py`: Notehead filtreleme ve örnekleme.
+- `augment_tmn_samples.py`: TMN sembol overlay + fallback (cairosvg yoksa placeholder).
+- `inject_tmn_annotations.py`: Yeni augmented image + TMN kategori + annotation birleşik JSON.
+
+## 7. Mevcut Durum (Bugün)
+- Augmented görseller üretildi (yeni dosyalar `augmented_samples/`).
+- Injection scripti çalıştırılmak üzere hazır; çıktı hedefi: `deepscores_train_tmn_aug.json`.
+- TMN kategori ekleme işlemi script içinde otomatik.
+
+### 7.2 Multi-Sembol Güncellemesi
+- İlk sürümde SVG -> PNG dönüştürme (cairosvg) ve placeholder vardı.
+- Revizyon: Kullanıcı kendi rasterlarını `tmn_symbols_png/` içine koyuyor, script sadece oradan okuyor.
+- SVG dönüştürme / placeholder tamamen kaldırıldı; kalite kontrol kullanıcıda.
+- Görüntü eşleşmesi `deepscores_train.json` id->filename map üzerinden; heuristik fallback korunuyor.
+
+### 7.3 README ve Dokümantasyon
+- Kısa pipeline özeti `README.md` oluşturuldu.
+- Genişletme önerileri ve hızlandırma adımları belirtildi.
+
+### 7.4 Sıradaki Teknik İyileştirmeler
+- Collision avoidance: Bir nota başının çok yakınında birden fazla sembol eklemeyi engelle (ör. min x-distance eşiği).
+- Sembol frekansı kontrol parametreleri (örn. `--max-per-image`, `--prob` CLI argümanları).
+- Augmented annotation'lar için orijinal notehead bbox + sembol bbox ayrı kaydetme (eğitimde attribute öğrenme opsiyonu).
+
+### 7.5 Açık Kalemler
+- `tez.txt` düzenli güncelleme (bu bölüm eklendi).
+- Eğitim konfigürasyonu (optimizer, sınıf ağırlıkları) henüz yazılmadı.
+- Sınıf frekans raporu çıkarılmadı (öneri: ayrı script).
+
+## 7.1 Son Çalıştırma Güncellemesi
+Injection scripti çalıştırıldı ve çıktı:
+`TMN augmentation merged. New images: 10, new annotations: 10`
+Yeni dosya: `deepscores_train_tmn_aug.json` oluşturuldu, kategori id 6000 eklendi.
+Uyarılar: Bazı beklenen augmented görseller bulunamadı (örn. `aug_899_0.png`, `aug_942_1.png`, ...). Bu, augment scriptinin ilgili image id'leri için henüz çalıştırılmamış olmasından kaynaklanıyor.
+
+### Yapılacak Düzeltme
+Eksik dosyaları üretmek için:
+1. `augment_tmn_samples.py` scriptini çalıştır (örn. `python augment_tmn_samples.py`).
+2. Ardından isteyen yeniden injection (gerek yok; dosyalar yalnızca görüntü eksik). İstersen bütünlük kontrol scripti eklenebilir.
+
+### Planlanan Genişletme
+- Çoklu TMN sembol üreteci (birden fazla microtonal accidental rastgele eklenmesi) -> sonraki adım.
+- Gerektiğinde eksik augmented dosyaları bulup otomatik üreten kontrol aracı.
+
+## 8. Sıradaki Adımlar
+1. Injection scriptini çalıştır: Yeni JSON dosyası oluştur.
+2. `requirements.txt` ekle (Pillow, opsiyonel cairosvg).
+3. Çoklu TMN sembol desteği (rastgele seçim: birden fazla mikrotonal işaret).
+4. README / pipeline dokümantasyonu (adım adım kullanım ve eğitim notları).
+5. Metrikler için ileride: Sınıf frekansı raporu, TMN vs Western dağılımı.
+
+## 9. Potansiyel Genişletmeler
+- Multi-task head (Western vs TMN ayrımı) veya attribute classifier (koma değeri tahmini).
+- Gerçek Hamparsum notasyonu varyantları ekleme.
+- Data balancing: TMN örneklerini oversample / sınıf ağırlıkları.
+
+## 10. Notlar
+- Negatif id tercih edilmedi (framework uyumluluk riski).
+- Orijinal dataset dosyası bozulmadan tutuluyor; yeni JSON türevi yazılacak.
+- Placeholder sembol yalnızca geliştirme amaçlı; gerçek TMN görünümü için kalıcı PNG/SVG kullanılmalı.
+
+## 11. Yapılandırma Gereksinimleri (Yakında)
+- `requirements.txt` planlanan içerik: `Pillow`, isteğe bağlı `cairosvg` (cairo bağımlılık uyarısı), muhtemel `numpy` / `opencv-python` (ileride daha karmaşık augment için).
+
+---
+Bu dosya her yeni önemli aksiyonda güncellenecek.
+\n+## 12. Son Güncellemeler (Dinamik Ölçek + Çakışma + Temizlik)
+### 12.1 Dinamik Ölçekleme Revizyonu
+- Önceki sabit 24px hedef yüksekliğinden uzaklaşıldı; her görüntü için Western accidental bbox yükseklikleri okunuyor.
+- `--dynamic-scale` + `--scale-mode` (median|mean|max|p90) argümanları eklendi.
+- Accidental yoksa fallback: notehead yüksekliği * `--scale-factor`.
+- Geçmişte fallback faktörü yanlış (hardcoded 1.05) kullanılırken artık CLI değerini alıyor.
+
+### 12.2 Kategori / Annotation Erişim Düzeltmesi
+- `deepscores_train.json` içindeki `annotations` alanı dict (id->annotation) formatında; liste varsayımı hatalıydı.
+- `img_id` alanı string; int'e dönüştürülmediği için indeksleme (accidental/notehead toplama) başarısız oluyordu.
+- Düzeltme: Dict değerlerini listeye çevir + `int(img_id_raw)` kullan + `cat_id` list[str] elemanlarını int'e çevir.
+
+### 12.3 Çakışma Önleme İyileştirmesi
+- Eski yaklaşım: Aşağı doğru 2px artışla tek yönlü kaydırma.
+- Yeni yaklaşım: Yukarı-aşağı dönüşümlü dikey arama (`--vertical-step`, `--max-attempts`).
+- `--skip-on-fail` eklenerek temiz konum bulunamazsa sembol yerleştirmeyi atlama seçeneği.
+- Sonuç: Bazı dar bölgelerde `placed=0` çıkabiliyor; ileride yatay arama veya force yerleştirme planlanıyor.
+
+### 12.4 Çıkış Temizleme
+- `--clean-output` argümanı: Yeni run öncesinde `augmented_samples/` içindeki eski PNG'leri silerek karışıklığı önler.
+- Run log: "OUTPUT temizlendi, silinen PNG sayısı: X".
+
+### 12.5 Debug Kayıtları
+- `--debug-heights` ile her image için accidental yükseklik listesi + seçilen hedef + notehead yüksekliği yazdırılıyor.
+- Örnek: `accidental_heights=[43,40,...] chosen_height=43 note_h=16 mode=median`.
+- Bu sayede dinamik ölçeğin gerçekten JSON verisinden geldiği kanıtlanıyor.
+
+### 12.6 Kalan Eksikler
+- Yatay kaçış / alternatif x konumu yok; sadece dikey.
+- Transparent padding kırpma yapılmıyor; bazı PNG'lerde gereğinden büyük bbox algılanabilir.
+- TMN yerleştirme annotation (bbox) üretimi henüz JSON'a eklenmedi.
+
+### 12.7 Planlanan Yeni Argümanlar (Öneri)
+- `--inflate-factor`: Accidental medyanını büyütme çarpanı (örn. 1.25) için.
+- `--force-one`: Çakışma nedeniyle hepsi atlandıysa en az bir sembolü zorlama yerleştirme.
+- `--trim-transparent`: PNG etrafındaki boş alpha border'ı kırpma (daha doğru çakışma tespiti).
+
+### 12.8 Test Durumu
+- Son debug run: Accidental listeleri dolu (örn. 100+ değer) → indexing düzeldi.
+- Deprecation uyarısı giderildi (RESAMPLE_LANCZOS fallback) ancak ilk sabit resize satırında güncelleme gerekiyordu; revise edildi.
+
+### 12.9 Sonraki Öncelikler
+1. Yatay arama / force yerleştirme ile yerleştirme başarısını artırma.
+2. Per-symbol TMN annotation üretip unified JSON'a ekleme.
+3. README güncellemesi (yeni CLI argümanları dokümantasyonu).
+4. Boyut şişirme (inflate) ve trimming ile görsel tutarlılığı yükseltme.
+
+---
