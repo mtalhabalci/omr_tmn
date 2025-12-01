@@ -189,10 +189,19 @@ def ensure_tmn_categories(data):
     cats = data.get('categories') or {}
     if not isinstance(cats, dict):
         cats = {}
-    existing_ids = {int(k) for k in cats.keys() if str(k).isdigit()}
     for cid, name in TMN_CATS:
-        if cid not in existing_ids:
-            cats[str(cid)] = {'name': name}
+        k = str(cid)
+        entry = cats.get(k) or {}
+        # Always ensure name is present
+        if 'name' not in entry:
+            entry['name'] = name
+        # Add annotation_set marker for TMN categories
+        if entry.get('annotation_set') != 'tmn':
+            entry['annotation_set'] = 'tmn'
+        # Use identity color to align with segmentation palette mapping
+        if entry.get('color') != cid:
+            entry['color'] = cid
+        cats[k] = entry
     data['categories'] = cats
 
 
@@ -214,7 +223,7 @@ SYM_TO_CAT = {
 }
 
 
-def process_one(fname, img_id, items, slot_w, slot_h, syms, anns_out_start_id, alpha_th, erode_iter, dilate_iter):
+def process_one(fname, img_id, items, slot_w, slot_h, syms, anns_out_start_id, alpha_th, erode_iter, dilate_iter, save_image=True):
     img_path = os.path.join(IMAGES_DIR, fname)
     if not os.path.isfile(img_path):
         return 0, anns_out_start_id, None
@@ -317,13 +326,13 @@ def process_one(fname, img_id, items, slot_w, slot_h, syms, anns_out_start_id, a
                 'cat_id': [str(cat_id)],
                 'area': area,
                 'img_id': str(img_id),
-                'comments': f"tmn:{os.path.basename(sym_path)};h_margin:{H_MARGIN};vshift:{MAX_VSHIFT};slot:{slot_w}x{slot_h}"
+                'comments': ''
             })
             # Keep eroded mask and position for mask overlays
             tmn_rects.append(((px, py, mask), cat_id))
         placed += 1
 
-    if placed > 0:
+    if placed > 0 and save_image:
         out_img = os.path.join(OUT_IMAGES, fname)
         canvas.save(out_img)
     # return new annotations to be merged later
@@ -393,6 +402,9 @@ def main():
     ap.add_argument('--dilate', type=int, default=0, help='Dilate iterations for symbol mask (0 disables)')
     ap.add_argument('--feather-radius', type=float, default=0.0, help='Gaussian blur radius for soft mask edges')
     ap.add_argument('--knockout-strength', type=float, default=1.0, help='Strength (0-1) of background darkening under symbol')
+    ap.add_argument('--images-only', dest='images_only', action='store_true', help='Generate only composited images; skip segmentation/instance/json updates')
+    ap.add_argument('--segmentation-only', dest='segmentation_only', action='store_true', help='Generate only segmentation masks; skip images/instance/json updates')
+    ap.add_argument('--instance-only', dest='instance_only', action='store_true', help='Generate only instance masks; skip images/segmentation/json updates')
     args = ap.parse_args()
 
     data, images, id2name, anns = load_dataset()
@@ -410,7 +422,7 @@ def main():
     else:
         images_sel = images[start:end]
 
-    # prepare annotations dict with next id
+    # prepare annotations dict with next id (unless images-only)
     anns_out = data.get('annotations') or {}
     if not isinstance(anns_out, dict):
         # convert list to dict if needed
@@ -423,8 +435,8 @@ def main():
     syms = symbol_paths()
 
     total_placed = 0
-    # Mapping of TMN cat_ids to palette indices (choose high unused indices)
-    CAT_TO_PALETTE = {209:248,210:249,211:250,212:251,213:252,214:253,215:254,216:255}
+    # Mapping of TMN cat_ids to palette indices (identity mapping to keep dataset consistent)
+    CAT_TO_PALETTE = {209:209,210:210,211:211,212:212,213:213,214:214,215:215,216:216}
 
     for img in images_sel:
         fname, img_id, items = collect_for_image(img, anns, id2name)
@@ -432,26 +444,41 @@ def main():
             fname, img_id, items,
             args.slot_w, args.slot_h,
             syms, next_id,
-            args.alpha_th, args.erode, args.dilate
+            args.alpha_th, args.erode, args.dilate, save_image=(not args.segmentation_only and not args.instance_only)
         )
         total_placed += placed
-        anns_out.update(updates)
-        # Update ann_ids list for image to include new ids
-        if placed > 0:
-            ann_ids_list = img.get('ann_ids')
-            if not isinstance(ann_ids_list, list):
-                ann_ids_list = []
-            ann_ids_list.extend(new_ids)
-            img['ann_ids'] = ann_ids_list
+        # Update annotations/json only if not in any *_only mode
+        if not args.images_only and not args.segmentation_only and not args.instance_only:
+            anns_out.update(updates)
+            # Update ann_ids list for image to include new ids
+            if placed > 0:
+                ann_ids_list = img.get('ann_ids')
+                if not isinstance(ann_ids_list, list):
+                    ann_ids_list = []
+                ann_ids_list.extend(new_ids)
+                img['ann_ids'] = ann_ids_list
+        # Generate masks depending on mode
+        if placed > 0 and (args.segmentation_only or args.instance_only or not args.images_only):
             # Overlay segmentation and instance masks using actual symbol shapes
             base_seg_path = os.path.join(os.path.dirname(IMAGES_DIR), 'segmentation', fname.replace('.png','_seg.png'))
             base_inst_path = os.path.join(os.path.dirname(IMAGES_DIR), 'instance', fname.replace('.png','_inst.png'))
             out_seg_path = os.path.join(OUT_SEG, fname.replace('.png','_seg.png'))
             out_inst_path = os.path.join(OUT_INST, fname.replace('.png','_inst.png'))
-            # Segmentation
+            # Determine output canvas sizes
+            img_w, img_h = 0, 0
+            try:
+                with Image.open(os.path.join(IMAGES_DIR, fname)) as _im:
+                    img_w, img_h = _im.size
+            except Exception:
+                pass
+            # Segmentation (fallback to new blank paletted image if base missing)
             if os.path.isfile(base_seg_path):
                 seg_im = Image.open(base_seg_path).copy()
-                # Ensure palette extended
+            else:
+                # create blank paletted segmentation if base not available
+                seg_im = Image.new('P', (img_w, img_h), 0)
+            # Ensure palette extended
+            if not args.instance_only:
                 seg_im = extend_palette(seg_im, [CAT_TO_PALETTE[cid] for _, cid in tmn_rects if cid in CAT_TO_PALETTE])
                 seg_px = seg_im.load()
                 for ((sx, sy, smask), cid) in tmn_rects:
@@ -472,32 +499,43 @@ def main():
                             if a_px[xx, yy] > 0:
                                 seg_px[ax, ay] = pal_idx
                 seg_im.save(out_seg_path)
-            # Instance
-            if os.path.isfile(base_inst_path):
-                inst_im = Image.open(base_inst_path).convert('RGBA')
-                existing_colors = set(inst_im.getdata())
-                # assign colors per new annotation id (1:1 with tmn_rects order)
-                ann_colors = {}
-                for aid, (rectinfo, cid) in zip(new_ids, tmn_rects):
-                    col = gen_instance_color(existing_colors)
-                    existing_colors.add(col)
-                    ann_colors[aid] = col
-                inst_px = inst_im.load()
-                for aid, ((sx, sy, smask), cid) in zip(new_ids, tmn_rects):
-                    color = ann_colors[aid]
-                    a_px = smask.load()
-                    w, h = smask.size
-                    for yy in range(h):
-                        ay = sy + yy
-                        if ay < 0 or ay >= inst_im.size[1]:
-                            continue
-                        for xx in range(w):
-                            ax = sx + xx
-                            if ax < 0 or ax >= inst_im.size[0]:
+                if not args.segmentation_only:
+                    # Instance (fallback to blank transparent RGBA if base missing)
+                    if os.path.isfile(base_inst_path):
+                        inst_im = Image.open(base_inst_path).convert('RGBA')
+                    else:
+                        inst_im = Image.new('RGBA', (img_w, img_h), (0,0,0,0))
+                    existing_colors = set(inst_im.getdata())
+                    # assign colors per new annotation id (1:1 with tmn_rects order)
+                    ann_colors = {}
+                    for aid, (rectinfo, cid) in zip(new_ids, tmn_rects):
+                        col = gen_instance_color(existing_colors)
+                        existing_colors.add(col)
+                        ann_colors[aid] = col
+                    # Update comments for new annotations with instance color hex (RRGGBB)
+                    for aid2, col in ann_colors.items():
+                        r, g, b, _ = col
+                        hex_str = f"#{r:02x}{g:02x}{b:02x}"
+                        if aid2 in updates:
+                            cmt = updates[aid2].get('comments') or ''
+                            sep = ';' if (cmt and not cmt.endswith(';')) else ''
+                            updates[aid2]['comments'] = f"{cmt}{sep}instance:{hex_str};"
+                    inst_px = inst_im.load()
+                    for aid, ((sx, sy, smask), cid) in zip(new_ids, tmn_rects):
+                        color = ann_colors[aid]
+                        a_px = smask.load()
+                        w, h = smask.size
+                        for yy in range(h):
+                            ay = sy + yy
+                            if ay < 0 or ay >= inst_im.size[1]:
                                 continue
-                            if a_px[xx, yy] > 0:
-                                inst_px[ax, ay] = color
-                inst_im.save(out_inst_path)
+                            for xx in range(w):
+                                ax = sx + xx
+                                if ax < 0 or ax >= inst_im.size[0]:
+                                    continue
+                                if a_px[xx, yy] > 0:
+                                    inst_px[ax, ay] = color
+                    inst_im.save(out_inst_path)
         print({
             'filename': fname,
             'placed': placed,
@@ -506,11 +544,42 @@ def main():
             'out_image': os.path.join(OUT_IMAGES, fname)
         })
 
-    data['annotations'] = anns_out
-    out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
-    with open(out_json, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False)
-    print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json})
+    # Write json only if not any *_only mode
+    if not args.images_only and not args.segmentation_only and not args.instance_only:
+        data['annotations'] = anns_out
+        out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+        with open(out_json, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False)
+        # Also write palette mapping for segmentation to understanding_dataset
+        try:
+            um_dir = os.path.join(BASE_DIR, 'understanding_dataset')
+            os.makedirs(um_dir, exist_ok=True)
+            # Build full mapping: default index = cat_id (if in [0,255]),
+            # override TMN categories using CAT_TO_PALETTE.
+            cat_to_palette_out = {}
+            cats = data.get('categories') or {}
+            # categories may be dict with string keys -> {'name': ...}
+            for k in cats.keys():
+                try:
+                    cid = int(k)
+                except Exception:
+                    continue
+                if cid in CAT_TO_PALETTE:
+                    cat_to_palette_out[str(cid)] = CAT_TO_PALETTE[cid]
+                else:
+                    # use identity mapping for original dataset categories within palette range
+                    if 0 <= cid <= 255:
+                        cat_to_palette_out[str(cid)] = cid
+            # ensure all TMN are present
+            for tmn_cid, pal_idx in CAT_TO_PALETTE.items():
+                cat_to_palette_out.setdefault(str(tmn_cid), pal_idx)
+            with open(os.path.join(um_dir, 'palette_mapping.json'), 'w', encoding='utf-8') as f_map:
+                json.dump({'cat_to_palette': cat_to_palette_out}, f_map, ensure_ascii=False)
+        except Exception:
+            pass
+        print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json, 'palette_mapping': os.path.join(BASE_DIR, 'understanding_dataset', 'palette_mapping.json')})
+    else:
+        print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_segmentation': OUT_SEG, 'out_instance': OUT_INST})
 
 if __name__=='__main__':
     main()
