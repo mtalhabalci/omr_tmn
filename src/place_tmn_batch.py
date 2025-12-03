@@ -1,7 +1,9 @@
 import os, json, argparse, random
+import glob
 from PIL import Image, ImageDraw, ImageFilter
 
 BASE_DIR = os.path.dirname(os.path.dirname(__file__))
+# Default single JSON (legacy). Can be overridden with args.
 DATASET_JSON = os.path.join(BASE_DIR, 'ds2_dense', 'deepscores_train.json')
 IMAGES_DIR = os.path.join(BASE_DIR, 'ds2_dense', 'images')
 SYMBOLS_DIR = os.path.join(BASE_DIR, 'tmn_symbols_png')
@@ -14,6 +16,7 @@ os.makedirs(OUT_IMAGES, exist_ok=True)
 os.makedirs(OUT_JSONLAR, exist_ok=True)
 os.makedirs(OUT_SEG, exist_ok=True)
 os.makedirs(OUT_INST, exist_ok=True)
+PROGRESS_LOG = os.path.join(OUT_JSONLAR, 'progress.jsonl')
 
 H_MARGIN = 2
 MAX_VSHIFT = 12
@@ -130,27 +133,70 @@ def collides_any(rect, boxes):
     return False
 
 
-def load_dataset():
-    with open(DATASET_JSON,'r',encoding='utf-8') as f:
-        data = json.load(f)
-    images = data.get('images') or []
-    if isinstance(images, dict):
-        images = list(images.values())
-    cats = data.get('categories') or {}
-    id2name = {}
-    if isinstance(cats, dict):
-        for cid, meta in cats.items():
+def load_dataset(json_path: str = None, json_glob: str = None):
+    """Load dataset from a single JSON or merge multiple shard JSONs.
+    - json_path: explicit JSON file to load
+    - json_glob: glob pattern relative to BASE_DIR, e.g., 'ds2_dense/deepscores-complete-*_train.json'
+    Merging policy:
+      images: concatenated unique by filename (first occurrence kept)
+      annotations: concatenated list
+      categories: last shard wins per id
+    """
+    datas = []
+    if json_path and os.path.isfile(json_path):
+        with open(json_path,'r',encoding='utf-8') as f:
+            datas.append(json.load(f))
+    elif json_glob:
+        hits = glob.glob(os.path.join(BASE_DIR, json_glob))
+        hits.sort()
+        for jp in hits:
             try:
-                cid_int = int(cid)
+                with open(jp,'r',encoding='utf-8') as f:
+                    datas.append(json.load(f))
             except Exception:
-                continue
-            name = meta.get('name') if isinstance(meta, dict) else None
-            if isinstance(name, str):
-                id2name[cid_int] = name.lower()
-    anns = data.get('annotations') or []
-    if isinstance(anns, dict):
-        anns = list(anns.values())
-    return data, images, id2name, anns
+                pass
+    else:
+        # fallbacks: train + test in root
+        for cand in ['ds2_dense/deepscores_train.json','ds2_dense/deepscores_test.json']:
+            p = os.path.join(BASE_DIR, cand)
+            if os.path.isfile(p):
+                with open(p,'r',encoding='utf-8') as f:
+                    datas.append(json.load(f))
+    if not datas:
+        # final fallback to legacy constant
+        with open(DATASET_JSON,'r',encoding='utf-8') as f:
+            datas.append(json.load(f))
+    images_out = []
+    seen = set()
+    anns_out = []
+    cats_out = {}
+    for data in datas:
+        imgs = data.get('images') or []
+        if isinstance(imgs, dict):
+            imgs = list(imgs.values())
+        for im in imgs:
+            fn = im.get('filename') or im.get('file_name')
+            if fn and fn not in seen:
+                images_out.append(im)
+                seen.add(fn)
+        anns = data.get('annotations') or []
+        if isinstance(anns, dict):
+            anns = list(anns.values())
+        anns_out.extend(anns)
+        cats = data.get('categories') or {}
+        for k, v in cats.items():
+            cats_out[str(k)] = v
+    id2name = {}
+    for k, v in cats_out.items():
+        try:
+            cid_int = int(k)
+        except Exception:
+            continue
+        name = v.get('name') if isinstance(v, dict) else None
+        if isinstance(name, str):
+            id2name[cid_int] = name.lower()
+    merged = {'images': images_out, 'annotations': anns_out, 'categories': cats_out}
+    return merged, images_out, id2name, anns_out
 
 
 def collect_for_image(image_obj, anns, id2name):
@@ -204,6 +250,80 @@ def ensure_tmn_categories(data):
         cats[k] = entry
     data['categories'] = cats
 
+def load_barline_mask_for_image(fname: str, barline_rgb_hex: str):
+    """Load segmentation image for fname and build a binary mask (L) for the given barline color.
+    Returns an 'L' image with 0/255, or None if segmentation not found or color not present.
+    """
+    try_paths = []
+    # ds2_dense (original)
+    try_paths.append(os.path.join(os.path.dirname(IMAGES_DIR), 'segmentation', fname.replace('.png','_seg.png')))
+    # ds2_dense_tmn (augmented)
+    try_paths.append(os.path.join(OUT_SEG, fname.replace('.png','_seg.png')))
+    seg_path = None
+    for p in try_paths:
+        if os.path.isfile(p):
+            seg_path = p
+            break
+    if not seg_path:
+        return None
+    im = Image.open(seg_path)
+    # parse hex
+    s = barline_rgb_hex.strip()
+    if s.startswith('#'):
+        s = s[1:]
+    try:
+        target_rgb = (int(s[0:2],16), int(s[2:4],16), int(s[4:6],16))
+    except Exception:
+        return None
+    # determine palette index for target_rgb
+    idx = None
+    if im.mode == 'P':
+        pal = im.getpalette()
+        if pal:
+            for i in range(256):
+                base = i*3
+                rgb = (pal[base], pal[base+1], pal[base+2])
+                if rgb == target_rgb:
+                    idx = i
+                    break
+    # build mask
+    w,h = im.size
+    mask = Image.new('L', (w,h), 0)
+    mp = mask.load()
+    px = im.load()
+    if im.mode == 'P' and idx is not None:
+        for y in range(h):
+            for x in range(w):
+                mp[x,y] = 255 if px[x,y] == idx else 0
+    else:
+        # fallback: compare RGB values directly
+        rgb_im = im.convert('RGB')
+        rp = rgb_im.load()
+        for y in range(h):
+            for x in range(w):
+                mp[x,y] = 255 if rp[x,y] == target_rgb else 0
+    return mask
+
+def intersects_mask_at(sx: int, sy: int, smask: Image.Image, other_mask: Image.Image) -> bool:
+    """Check if placing smask at (sx,sy) overlaps other_mask (both 'L' 0/255)."""
+    if other_mask is None:
+        return False
+    a_px = smask.load()
+    o_px = other_mask.load()
+    w,h = smask.size
+    W,H = other_mask.size
+    for yy in range(h):
+        oy = sy + yy
+        if oy < 0 or oy >= H:
+            continue
+        for xx in range(w):
+            ox = sx + xx
+            if ox < 0 or ox >= W:
+                continue
+            if a_px[xx,yy] > 0 and o_px[ox,oy] > 0:
+                return True
+    return False
+
 
 def symbol_paths():
     paths = [os.path.join(SYMBOLS_DIR, n) for n in sorted(os.listdir(SYMBOLS_DIR)) if n.lower().endswith('.png')]
@@ -252,6 +372,9 @@ def process_one(fname, img_id, items, slot_w, slot_h, syms, anns_out_start_id, a
     anns_new = []
     new_ids = []  # track new annotation ids generated (assigned later)
     tmn_rects = []  # (rect, cat_id) for later mask overlays
+
+    # Optional barline mask (from segmentation) using color #00acc6
+    bar_mask = load_barline_mask_for_image(fname, '#00acc6')
 
     for idx, nh in enumerate(noteheads):
         x1n,y1n,x2n,y2n = nh
@@ -309,6 +432,9 @@ def process_one(fname, img_id, items, slot_w, slot_h, syms, anns_out_start_id, a
             mask = dilate_mask(mask, iterations=dilate_iter)
         px = ix1 + (avail_w - new_w)//2
         py = iy1 + (avail_h - new_h)//2
+        # If overlaps barline mask, skip placement
+        if bar_mask is not None and intersects_mask_at(px, py, mask, bar_mask):
+            continue
         # Images: place the symbol directly with natural transparency
         canvas.alpha_composite(sym_resized, (px, py))
         new_rect = (px, py, px+new_w, py+new_h)
@@ -389,10 +515,24 @@ def gen_instance_color(existing):
     # fallback
     return (255,0,0,255)
 
+def outputs_status(fname: str):
+    """Return simple status booleans for existing outputs of an image."""
+    img_ok = os.path.isfile(os.path.join(OUT_IMAGES, fname))
+    seg_ok = os.path.isfile(os.path.join(OUT_SEG, fname.replace('.png','_seg.png')))
+    inst_ok = os.path.isfile(os.path.join(OUT_INST, fname.replace('.png','_inst.png')))
+    return {'image': img_ok, 'seg': seg_ok, 'inst': inst_ok}
+
+def append_progress(rec: dict):
+    try:
+        with open(PROGRESS_LOG, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--limit', type=int, default=20)
+    ap.add_argument('--limit', type=int, default=0)
     ap.add_argument('--offset', type=int, default=0)
     ap.add_argument('--slot-w', type=int, default=17)
     ap.add_argument('--slot-h', type=int, default=48)
@@ -405,9 +545,14 @@ def main():
     ap.add_argument('--images-only', dest='images_only', action='store_true', help='Generate only composited images; skip segmentation/instance/json updates')
     ap.add_argument('--segmentation-only', dest='segmentation_only', action='store_true', help='Generate only segmentation masks; skip images/instance/json updates')
     ap.add_argument('--instance-only', dest='instance_only', action='store_true', help='Generate only instance masks; skip images/segmentation/json updates')
+    ap.add_argument('--checkpoint', type=int, default=100, help='Flush JSON/progress every N processed images (0 disables checkpoint flush)')
+    ap.add_argument('--force', action='store_true', help='Force reprocessing even if outputs exist')
+    ap.add_argument('--from-fs-missing', dest='from_fs_missing', action='store_true', help='Process only files present in dataset JSON + source images but missing in TMN output images')
+    ap.add_argument('--json-path', type=str, default='', help='Explicit dataset JSON file path')
+    ap.add_argument('--json-glob', type=str, default='', help='Glob pattern relative to workspace root for multiple shard JSONs, e.g., "ds2_dense/deepscores-complete-*_train.json"')
     args = ap.parse_args()
 
-    data, images, id2name, anns = load_dataset()
+    data, images, id2name, anns = load_dataset(json_path=args.json_path or None, json_glob=args.json_glob or None)
     ensure_tmn_categories(data)
     start = max(0, int(args.offset))
     end = start + args.limit if args.limit > 0 else None
@@ -420,7 +565,29 @@ def main():
         filename_to_img = {img.get('filename'): img for img in images if img.get('filename') in target_set}
         images_sel = [filename_to_img[f] for f in only_list if f in filename_to_img]
     else:
-        images_sel = images[start:end]
+        # Optional mode: compute intersection of JSON images and filesystem source, minus TMN outputs
+        if args.from_fs_missing:
+            src_dir = IMAGES_DIR
+            out_images_dir = OUT_IMAGES
+            try:
+                fs_names = set([n for n in os.listdir(src_dir) if n.lower().endswith('.png')])
+            except Exception:
+                fs_names = set()
+            try:
+                tmn_names = set([n for n in os.listdir(out_images_dir) if n.lower().endswith('.png')])
+            except Exception:
+                tmn_names = set()
+            # Dataset JSON image names
+            json_names = [img.get('filename') for img in images if img.get('filename')]
+            json_set = set(json_names)
+            # candidates = in JSON AND on FS AND not already in TMN images
+            candidates = [n for n in json_names if (n in fs_names) and (n not in tmn_names)]
+            # Build selection preserving dataset order
+            filename_to_img = {img.get('filename'): img for img in images if img.get('filename') in candidates}
+            images_sel = [filename_to_img[f] for f in candidates if f in filename_to_img]
+            print({'selection_mode': 'from-fs-missing', 'candidates': len(candidates)})
+        else:
+            images_sel = images[start:end]
 
     # prepare annotations dict with next id (unless images-only)
     anns_out = data.get('annotations') or {}
@@ -435,11 +602,29 @@ def main():
     syms = symbol_paths()
 
     total_placed = 0
+    processed_counter = 0
     # Mapping of TMN cat_ids to palette indices (identity mapping to keep dataset consistent)
     CAT_TO_PALETTE = {209:209,210:210,211:211,212:212,213:213,214:214,215:215,216:216}
 
     for img in images_sel:
         fname, img_id, items = collect_for_image(img, anns, id2name)
+        # Resume/idempotent skip: if outputs already exist, skip unless forced
+        st = outputs_status(fname)
+        if not args.force:
+            # Determine required outputs based on mode
+            needs_image = not args.segmentation_only and not args.instance_only
+            needs_seg = not args.images_only and not args.instance_only
+            needs_inst = not args.images_only and not args.segmentation_only
+            already_done = True
+            if needs_image:
+                already_done = already_done and st['image']
+            if needs_seg:
+                already_done = already_done and st['seg']
+            if needs_inst:
+                already_done = already_done and st['inst']
+            if already_done:
+                print({'filename': fname, 'skipped': True, 'reason': 'outputs-exist'})
+                continue
         placed, next_id, updates, new_ids, tmn_rects = process_one(
             fname, img_id, items,
             args.slot_w, args.slot_h,
@@ -447,6 +632,7 @@ def main():
             args.alpha_th, args.erode, args.dilate, save_image=(not args.segmentation_only and not args.instance_only)
         )
         total_placed += placed
+        processed_counter += 1 if placed > 0 else 0
         # Update annotations/json only if not in any *_only mode
         if not args.images_only and not args.segmentation_only and not args.instance_only:
             anns_out.update(updates)
@@ -457,6 +643,17 @@ def main():
                     ann_ids_list = []
                 ann_ids_list.extend(new_ids)
                 img['ann_ids'] = ann_ids_list
+        # Append lightweight progress log for resume diagnostics
+        append_progress({
+            'filename': fname,
+            'placed': placed,
+            'outputs': st,
+            'required': {
+                'image': not args.segmentation_only and not args.instance_only,
+                'seg': not args.images_only and not args.instance_only,
+                'inst': not args.images_only and not args.segmentation_only
+            }
+        })
         # Generate masks depending on mode
         if placed > 0 and (args.segmentation_only or args.instance_only or not args.images_only):
             # Overlay segmentation and instance masks using actual symbol shapes
@@ -543,6 +740,17 @@ def main():
             'slot_size': (args.slot_w, args.slot_h),
             'out_image': os.path.join(OUT_IMAGES, fname)
         })
+
+        # Checkpoint flush: write JSON incrementally every N processed images
+        if processed_counter > 0 and args.checkpoint and (processed_counter % args.checkpoint == 0) and (not args.images_only and not args.segmentation_only and not args.instance_only):
+            out_json_ck = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+            try:
+                data['annotations'] = anns_out
+                with open(out_json_ck, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False)
+                print({'checkpoint': processed_counter, 'out_json': out_json_ck})
+            except Exception:
+                pass
 
     # Write json only if not any *_only mode
     if not args.images_only and not args.segmentation_only and not args.instance_only:
