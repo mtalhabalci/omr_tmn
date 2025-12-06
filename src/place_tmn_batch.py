@@ -12,10 +12,8 @@ OUT_IMAGES = os.path.join(OUT_ROOT, 'images')
 OUT_JSONLAR = os.path.join(OUT_ROOT, 'jsonlar')
 OUT_SEG = os.path.join(OUT_ROOT, 'segmentation')
 OUT_INST = os.path.join(OUT_ROOT, 'instance')
-os.makedirs(OUT_IMAGES, exist_ok=True)
-os.makedirs(OUT_JSONLAR, exist_ok=True)
-os.makedirs(OUT_SEG, exist_ok=True)
-os.makedirs(OUT_INST, exist_ok=True)
+for _p in (OUT_IMAGES, OUT_JSONLAR, OUT_SEG, OUT_INST):
+    os.makedirs(_p, exist_ok=True)
 PROGRESS_LOG = os.path.join(OUT_JSONLAR, 'progress.jsonl')
 
 H_MARGIN = 2
@@ -143,16 +141,22 @@ def load_dataset(json_path: str = None, json_glob: str = None):
       categories: last shard wins per id
     """
     datas = []
+    shards = []  # list of tuples (path, data)
     if json_path and os.path.isfile(json_path):
         with open(json_path,'r',encoding='utf-8') as f:
-            datas.append(json.load(f))
+            d = json.load(f)
+            datas.append(d)
+            shards.append((json_path, d))
     elif json_glob:
-        hits = glob.glob(os.path.join(BASE_DIR, json_glob))
+        # Support absolute or relative glob
+        hits = glob.glob(json_glob if os.path.isabs(json_glob) else os.path.join(BASE_DIR, json_glob))
         hits.sort()
         for jp in hits:
             try:
                 with open(jp,'r',encoding='utf-8') as f:
-                    datas.append(json.load(f))
+                    d = json.load(f)
+                    datas.append(d)
+                    shards.append((jp, d))
             except Exception:
                 pass
     else:
@@ -161,11 +165,15 @@ def load_dataset(json_path: str = None, json_glob: str = None):
             p = os.path.join(BASE_DIR, cand)
             if os.path.isfile(p):
                 with open(p,'r',encoding='utf-8') as f:
-                    datas.append(json.load(f))
+                    d = json.load(f)
+                    datas.append(d)
+                    shards.append((p, d))
     if not datas:
         # final fallback to legacy constant
         with open(DATASET_JSON,'r',encoding='utf-8') as f:
-            datas.append(json.load(f))
+            d = json.load(f)
+            datas.append(d)
+            shards.append((DATASET_JSON, d))
     images_out = []
     seen = set()
     anns_out = []
@@ -196,7 +204,16 @@ def load_dataset(json_path: str = None, json_glob: str = None):
         if isinstance(name, str):
             id2name[cid_int] = name.lower()
     merged = {'images': images_out, 'annotations': anns_out, 'categories': cats_out}
-    return merged, images_out, id2name, anns_out
+
+    # Build per-shard membership by filename
+    shard_membership = []  # list of sets of filenames per shard
+    for (_, d) in shards:
+        imgs = d.get('images') or []
+        if isinstance(imgs, dict):
+            imgs = list(imgs.values())
+        shard_membership.append(set([im.get('filename') or im.get('file_name') for im in imgs if (im.get('filename') or im.get('file_name'))]))
+
+    return merged, images_out, id2name, anns_out, shards, shard_membership
 
 
 def collect_for_image(image_obj, anns, id2name):
@@ -549,10 +566,30 @@ def main():
     ap.add_argument('--force', action='store_true', help='Force reprocessing even if outputs exist')
     ap.add_argument('--from-fs-missing', dest='from_fs_missing', action='store_true', help='Process only files present in dataset JSON + source images but missing in TMN output images')
     ap.add_argument('--json-path', type=str, default='', help='Explicit dataset JSON file path')
-    ap.add_argument('--json-glob', type=str, default='', help='Glob pattern relative to workspace root for multiple shard JSONs, e.g., "ds2_dense/deepscores-complete-*_train.json"')
+    ap.add_argument('--json-glob', type=str, default='', help='Glob for single/multiple JSONs. Absolute or relative to repo root.')
+    ap.add_argument('--images-dir', type=str, default='', help='Override source images directory (defaults to repo ds2_dense/images)')
+    ap.add_argument('--out-root', type=str, default='', help='Override output root directory (will create images/segmentation/instance/jsonlar under it)')
+    ap.add_argument('--symbols-dir', type=str, default='', help='Override TMN symbols PNG directory')
+    ap.add_argument('--json-out-mode', type=str, default='single', choices=['single','per-shard'], help='Write a single merged JSON or one per input shard (when using json-glob)')
     args = ap.parse_args()
 
-    data, images, id2name, anns = load_dataset(json_path=args.json_path or None, json_glob=args.json_glob or None)
+    # Apply path overrides early
+    global IMAGES_DIR, OUT_ROOT, OUT_IMAGES, OUT_JSONLAR, OUT_SEG, OUT_INST, SYMBOLS_DIR, PROGRESS_LOG
+    if args.images_dir:
+        IMAGES_DIR = args.images_dir
+    if args.out_root:
+        OUT_ROOT = args.out_root
+        OUT_IMAGES = os.path.join(OUT_ROOT, 'images')
+        OUT_JSONLAR = os.path.join(OUT_ROOT, 'jsonlar')
+        OUT_SEG = os.path.join(OUT_ROOT, 'segmentation')
+        OUT_INST = os.path.join(OUT_ROOT, 'instance')
+        for _p in (OUT_IMAGES, OUT_JSONLAR, OUT_SEG, OUT_INST):
+            os.makedirs(_p, exist_ok=True)
+        PROGRESS_LOG = os.path.join(OUT_JSONLAR, 'progress.jsonl')
+    if args.symbols_dir:
+        SYMBOLS_DIR = args.symbols_dir
+
+    data, images, id2name, anns, shards, shard_membership = load_dataset(json_path=args.json_path or None, json_glob=args.json_glob or None)
     ensure_tmn_categories(data)
     start = max(0, int(args.offset))
     end = start + args.limit if args.limit > 0 else None
@@ -743,49 +780,155 @@ def main():
 
         # Checkpoint flush: write JSON incrementally every N processed images
         if processed_counter > 0 and args.checkpoint and (processed_counter % args.checkpoint == 0) and (not args.images_only and not args.segmentation_only and not args.instance_only):
-            out_json_ck = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
             try:
-                data['annotations'] = anns_out
-                with open(out_json_ck, 'w', encoding='utf-8') as f:
-                    json.dump(data, f, ensure_ascii=False)
-                print({'checkpoint': processed_counter, 'out_json': out_json_ck})
+                if args.json_out_mode == 'per-shard' and shards:
+                    # build per-shard outputs
+                    imgid_to_fname = {}
+                    for im in data.get('images') or []:
+                        try:
+                            imgid_to_fname[int(im.get('id'))] = im.get('filename') or im.get('file_name')
+                        except Exception:
+                            continue
+                    fname_to_annids = {}
+                    for k, v in anns_out.items():
+                        try:
+                            fid = int(v.get('img_id'))
+                        except Exception:
+                            continue
+                        fn = imgid_to_fname.get(fid)
+                        if not fn:
+                            continue
+                        fname_to_annids.setdefault(fn, []).append(k)
+                    for (spath, sdata), sset in zip(shards, shard_membership):
+                        sd = dict(sdata)  # shallow copy
+                        ensure_tmn_categories(sd)
+                        # Filter annotations
+                        ann_filtered = {k: v for k, v in anns_out.items() if (imgid_to_fname.get(int(v.get('img_id'))) in sset if v.get('img_id') else False)}
+                        sd['annotations'] = ann_filtered
+                        # Update images' ann_ids if present
+                        imgs = sd.get('images') or []
+                        if isinstance(imgs, dict):
+                            imgs = list(imgs.values())
+                        for im in imgs:
+                            fn = im.get('filename') or im.get('file_name')
+                            if fn and fn in fname_to_annids:
+                                im['ann_ids'] = fname_to_annids[fn]
+                        out_name = os.path.basename(spath)
+                        out_json_ck = os.path.join(OUT_JSONLAR, out_name)
+                        with open(out_json_ck, 'w', encoding='utf-8') as f:
+                            json.dump(sd, f, ensure_ascii=False)
+                    print({'checkpoint': processed_counter, 'out_json_mode': 'per-shard', 'count': len(shards)})
+                else:
+                    out_json_ck = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+                    data['annotations'] = anns_out
+                    with open(out_json_ck, 'w', encoding='utf-8') as f:
+                        json.dump(data, f, ensure_ascii=False)
+                    print({'checkpoint': processed_counter, 'out_json': out_json_ck})
             except Exception:
                 pass
 
     # Write json only if not any *_only mode
     if not args.images_only and not args.segmentation_only and not args.instance_only:
-        data['annotations'] = anns_out
-        out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
-        with open(out_json, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False)
-        # Also write palette mapping for segmentation to understanding_dataset
-        try:
-            um_dir = os.path.join(BASE_DIR, 'understanding_dataset')
-            os.makedirs(um_dir, exist_ok=True)
-            # Build full mapping: default index = cat_id (if in [0,255]),
-            # override TMN categories using CAT_TO_PALETTE.
-            cat_to_palette_out = {}
-            cats = data.get('categories') or {}
-            # categories may be dict with string keys -> {'name': ...}
-            for k in cats.keys():
+        # Final JSON write
+        if args.json_out_mode == 'per-shard' and shards:
+            try:
+                imgid_to_fname = {}
+                for im in data.get('images') or []:
+                    try:
+                        imgid_to_fname[int(im.get('id'))] = im.get('filename') or im.get('file_name')
+                    except Exception:
+                        continue
+                fname_to_annids = {}
+                for k, v in anns_out.items():
+                    try:
+                        fid = int(v.get('img_id'))
+                    except Exception:
+                        continue
+                    fn = imgid_to_fname.get(fid)
+                    if not fn:
+                        continue
+                    fname_to_annids.setdefault(fn, []).append(k)
+                out_paths = []
+                for (spath, sdata), sset in zip(shards, shard_membership):
+                    sd = dict(sdata)
+                    ensure_tmn_categories(sd)
+                    ann_filtered = {k: v for k, v in anns_out.items() if (imgid_to_fname.get(int(v.get('img_id'))) in sset if v.get('img_id') else False)}
+                    sd['annotations'] = ann_filtered
+                    imgs = sd.get('images') or []
+                    if isinstance(imgs, dict):
+                        imgs = list(imgs.values())
+                    for im in imgs:
+                        fn = im.get('filename') or im.get('file_name')
+                        if fn and fn in fname_to_annids:
+                            im['ann_ids'] = fname_to_annids[fn]
+                    out_name = os.path.basename(spath)
+                    out_json = os.path.join(OUT_JSONLAR, out_name)
+                    with open(out_json, 'w', encoding='utf-8') as f:
+                        json.dump(sd, f, ensure_ascii=False)
+                    out_paths.append(out_json)
+                # palette mapping write
                 try:
-                    cid = int(k)
+                    um_dir = os.path.join(BASE_DIR, 'understanding_dataset')
+                    os.makedirs(um_dir, exist_ok=True)
+                    cat_to_palette_out = {}
+                    cats = data.get('categories') or {}
+                    for k in cats.keys():
+                        try:
+                            cid = int(k)
+                        except Exception:
+                            continue
+                        if cid in CAT_TO_PALETTE:
+                            cat_to_palette_out[str(cid)] = CAT_TO_PALETTE[cid]
+                        else:
+                            if 0 <= cid <= 255:
+                                cat_to_palette_out[str(cid)] = cid
+                    for tmn_cid, pal_idx in CAT_TO_PALETTE.items():
+                        cat_to_palette_out.setdefault(str(tmn_cid), pal_idx)
+                    with open(os.path.join(um_dir, 'palette_mapping.json'), 'w', encoding='utf-8') as f_map:
+                        json.dump({'cat_to_palette': cat_to_palette_out}, f_map, ensure_ascii=False)
                 except Exception:
-                    continue
-                if cid in CAT_TO_PALETTE:
-                    cat_to_palette_out[str(cid)] = CAT_TO_PALETTE[cid]
-                else:
-                    # use identity mapping for original dataset categories within palette range
-                    if 0 <= cid <= 255:
-                        cat_to_palette_out[str(cid)] = cid
-            # ensure all TMN are present
-            for tmn_cid, pal_idx in CAT_TO_PALETTE.items():
-                cat_to_palette_out.setdefault(str(tmn_cid), pal_idx)
-            with open(os.path.join(um_dir, 'palette_mapping.json'), 'w', encoding='utf-8') as f_map:
-                json.dump({'cat_to_palette': cat_to_palette_out}, f_map, ensure_ascii=False)
-        except Exception:
-            pass
-        print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json, 'palette_mapping': os.path.join(BASE_DIR, 'understanding_dataset', 'palette_mapping.json')})
+                    pass
+                print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_jsons': out_paths, 'palette_mapping': os.path.join(BASE_DIR, 'understanding_dataset', 'palette_mapping.json')})
+            except Exception:
+                # Fallback to single write if something goes wrong
+                data['annotations'] = anns_out
+                out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+                with open(out_json, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False)
+                print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json})
+        else:
+            data['annotations'] = anns_out
+            out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+            with open(out_json, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False)
+            # Also write palette mapping for segmentation to understanding_dataset
+            try:
+                um_dir = os.path.join(BASE_DIR, 'understanding_dataset')
+                os.makedirs(um_dir, exist_ok=True)
+                # Build full mapping: default index = cat_id (if in [0,255]),
+                # override TMN categories using CAT_TO_PALETTE.
+                cat_to_palette_out = {}
+                cats = data.get('categories') or {}
+                # categories may be dict with string keys -> {'name': ...}
+                for k in cats.keys():
+                    try:
+                        cid = int(k)
+                    except Exception:
+                        continue
+                    if cid in CAT_TO_PALETTE:
+                        cat_to_palette_out[str(cid)] = CAT_TO_PALETTE[cid]
+                    else:
+                        # use identity mapping for original dataset categories within palette range
+                        if 0 <= cid <= 255:
+                            cat_to_palette_out[str(cid)] = cid
+                # ensure all TMN are present
+                for tmn_cid, pal_idx in CAT_TO_PALETTE.items():
+                    cat_to_palette_out.setdefault(str(tmn_cid), pal_idx)
+                with open(os.path.join(um_dir, 'palette_mapping.json'), 'w', encoding='utf-8') as f_map:
+                    json.dump({'cat_to_palette': cat_to_palette_out}, f_map, ensure_ascii=False)
+            except Exception:
+                pass
+            print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json, 'palette_mapping': os.path.join(BASE_DIR, 'understanding_dataset', 'palette_mapping.json')})
     else:
         print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_segmentation': OUT_SEG, 'out_instance': OUT_INST})
 
