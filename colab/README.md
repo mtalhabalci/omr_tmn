@@ -2,9 +2,14 @@
 
 This guide helps you run training on Google Colab with GPU.
 
+## Quick-Open Links
+
+- Generate TMN only: https://colab.research.google.com/github/mtalhabalci/omr_copilot/blob/master/colab/Generate_DS2Dense_TMN.ipynb
+- Train Mask R-CNN: https://colab.research.google.com/github/mtalhabalci/omr_copilot/blob/master/colab/Train_TMN_MaskRCNN.ipynb
+
 ## Steps
 
-1. Open the notebook `colab/Train_MaskRCNN_DS2DenseTMN.ipynb` in Google Colab.
+1. Open the notebook `colab/Generate_DS2Dense_TMN.ipynb` in Google Colab.
 2. In Colab, enable GPU: Runtime → Change runtime type → GPU.
 3. Mount Google Drive in the notebook.
 4. If you want to run augmentation directly on Drive data (no upload), set:
@@ -12,7 +17,7 @@ This guide helps you run training on Google Colab with GPU.
 	- `OUT_ROOT=/content/drive/MyDrive/omr_dataset/dataset/ds2/ds2_dense_tmn`
 	- The notebook includes a cell to run `place_tmn_batch.py` with `--from-fs-missing` and `--json-out-mode per-shard` so only missing outputs are generated and JSONs are written per shard.
 5. Run the notebook cells top-to-bottom to install deps and execute placement.
-6. For training, point your dataloader to `OUT_ROOT/images` and the `OUT_ROOT/jsonlar/*.json` files; checkpoints are saved under `BASE_DIR/outputs/mask_rcnn` (you can change this).
+6. For training, point your dataloader to `OUT_ROOT/images` and the `OUT_ROOT/jsonlar/*.json` files; checkpoints are saved under `OUT_ROOT/checkpoints` (configurable in the training notebook).
 
 ## Packing the dataset from Windows (PowerShell)
 
