@@ -1,0 +1,169 @@
+{
+  "superset_total": 216,
+  "observed_total": 193,
+  "coverage_ratio": 0.8935185185185185,
+  "unseen_count": 23,
+  "unseen_ids": [
+    10,
+    26,
+    28,
+    30,
+    32,
+    34,
+    36,
+    38,
+    40,
+    47,
+    49,
+    55,
+    61,
+    63,
+    65,
+    93,
+    100,
+    101,
+    102,
+    103,
+    128,
+    190,
+    197
+  ],
+  "unseen_items": [
+    {
+      "id": 10,
+      "name": "clefUnpitchedPercussion",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 26,
+      "name": "noteheadBlackOnLineSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 28,
+      "name": "noteheadBlackInSpaceSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 30,
+      "name": "noteheadHalfOnLineSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 32,
+      "name": "noteheadHalfInSpaceSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 34,
+      "name": "noteheadWholeOnLineSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 36,
+      "name": "noteheadWholeInSpaceSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 38,
+      "name": "noteheadDoubleWholeOnLineSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 40,
+      "name": "noteheadDoubleWholeInSpaceSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 47,
+      "name": "tremolo5",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 49,
+      "name": "flag8thUpSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 55,
+      "name": "flag8thDownSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 61,
+      "name": "accidentalFlatSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 63,
+      "name": "accidentalNaturalSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 65,
+      "name": "accidentalSharpSmall",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 93,
+      "name": "restHNr",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 100,
+      "name": "graceNoteAcciaccaturaStemUp",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 101,
+      "name": "graceNoteAppoggiaturaStemUp",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 102,
+      "name": "graceNoteAcciaccaturaStemDown",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 103,
+      "name": "graceNoteAppoggiaturaStemDown",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 128,
+      "name": "tuplet2",
+      "annotation_set": "deepscores"
+    },
+    {
+      "id": 190,
+      "name": "numeral",
+      "annotation_set": "muscima++"
+    },
+    {
+      "id": 197,
+      "name": "graceNoteAcciaccatura",
+      "annotation_set": "muscima++"
+    }
+  ],
+  "observed_not_in_superset": [],
+  "tmn_presence": {
+    "209": true,
+    "210": true,
+    "211": true,
+    "212": true,
+    "213": true,
+    "214": true,
+    "215": true,
+    "216": true
+  },
+  "tmn_counts": {
+    "209": 5920,
+    "210": 5873,
+    "211": 5842,
+    "212": 5805,
+    "213": 5754,
+    "214": 5704,
+    "215": 5666,
+    "216": 5615
+  }
+}
