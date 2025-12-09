@@ -1,0 +1,15 @@
+# BASIT KURULUM - Conda Environment için
+# Windows Command Prompt'ta çalıştırın (PowerShell değil!)
+
+# 1. Environment'ı aktifleştir
+conda activate maskrcnn_local
+
+# 2. Pip ile paketleri yükle
+pip install torch==2.5.1 torchvision==0.20.1 --index-url https://download.pytorch.org/whl/cpu
+pip install pycocotools pillow matplotlib numpy
+
+# 3. Test et
+python test_env.py
+
+# 4. Eğitimi başlat
+python train_local.py
