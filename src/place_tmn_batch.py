@@ -562,6 +562,7 @@ def main():
     ap.add_argument('--images-only', dest='images_only', action='store_true', help='Generate only composited images; skip segmentation/instance/json updates')
     ap.add_argument('--segmentation-only', dest='segmentation_only', action='store_true', help='Generate only segmentation masks; skip images/instance/json updates')
     ap.add_argument('--instance-only', dest='instance_only', action='store_true', help='Generate only instance masks; skip images/segmentation/json updates')
+    ap.add_argument('--json-only', dest='json_only', action='store_true', help='Update JSON annotations only; skip images/segmentation/instance outputs')
     ap.add_argument('--checkpoint', type=int, default=100, help='Flush JSON/progress every N processed images (0 disables checkpoint flush)')
     ap.add_argument('--force', action='store_true', help='Force reprocessing even if outputs exist')
     ap.add_argument('--from-fs-missing', dest='from_fs_missing', action='store_true', help='Process only files present in dataset JSON + source images but missing in TMN output images')
@@ -589,8 +590,32 @@ def main():
     if args.symbols_dir:
         SYMBOLS_DIR = args.symbols_dir
 
+    # Determine output JSON basename for single-mode writes. If a specific json_path
+    # is provided, reuse its basename for the output to keep names aligned.
+    if args.json_out_mode != 'per-shard':
+        if args.json_path:
+            single_out_basename = os.path.basename(args.json_path)
+        else:
+            single_out_basename = 'deepscores_train.json'
+    else:
+        single_out_basename = None
+
     data, images, id2name, anns, shards, shard_membership = load_dataset(json_path=args.json_path or None, json_glob=args.json_glob or None)
     ensure_tmn_categories(data)
+    try:
+        print({
+            'config': {
+                'images_dir': IMAGES_DIR,
+                'out_root': OUT_ROOT,
+                'symbols_dir': SYMBOLS_DIR,
+                'json_source': args.json_path or args.json_glob,
+                'json_out_mode': args.json_out_mode,
+                'shards_loaded': len(shards),
+                'images_in_json': len(images)
+            }
+        })
+    except Exception:
+        pass
     start = max(0, int(args.offset))
     end = start + args.limit if args.limit > 0 else None
     only_list = []
@@ -649,9 +674,10 @@ def main():
         st = outputs_status(fname)
         if not args.force:
             # Determine required outputs based on mode
-            needs_image = not args.segmentation_only and not args.instance_only
-            needs_seg = not args.images_only and not args.instance_only
-            needs_inst = not args.images_only and not args.segmentation_only
+            # In json-only mode, no physical outputs are required; do not skip due to existing outputs.
+            needs_image = (not args.segmentation_only and not args.instance_only and not args.json_only)
+            needs_seg = (not args.images_only and not args.instance_only and not args.json_only)
+            needs_inst = (not args.images_only and not args.segmentation_only and not args.json_only)
             already_done = True
             if needs_image:
                 already_done = already_done and st['image']
@@ -662,15 +688,34 @@ def main():
             if already_done:
                 print({'filename': fname, 'skipped': True, 'reason': 'outputs-exist'})
                 continue
+        # In json-only mode, avoid duplicating TMN annotations for images that already have TMN.
+        if args.json_only:
+            try:
+                img_has_tmn = False
+                for _aid, _rec in (anns_out or {}).items():
+                    if str(_rec.get('img_id')) == str(img_id):
+                        for _cid in _rec.get('cat_id', []):
+                            if str(_cid).isdigit() and 209 <= int(_cid) <= 216:
+                                img_has_tmn = True
+                                break
+                    if img_has_tmn:
+                        break
+                if img_has_tmn:
+                    print({'filename': fname, 'skipped': True, 'reason': 'tmn-already-in-json'})
+                    continue
+            except Exception:
+                pass
+
         placed, next_id, updates, new_ids, tmn_rects = process_one(
             fname, img_id, items,
             args.slot_w, args.slot_h,
             syms, next_id,
-            args.alpha_th, args.erode, args.dilate, save_image=(not args.segmentation_only and not args.instance_only)
+            args.alpha_th, args.erode, args.dilate, save_image=(not args.segmentation_only and not args.instance_only and not args.json_only)
         )
         total_placed += placed
         processed_counter += 1 if placed > 0 else 0
         # Update annotations/json only if not in any *_only mode
+        # When json-only is enabled, still update JSON annotations even though images/seg/inst are skipped.
         if not args.images_only and not args.segmentation_only and not args.instance_only:
             anns_out.update(updates)
             # Update ann_ids list for image to include new ids
@@ -692,7 +737,8 @@ def main():
             }
         })
         # Generate masks depending on mode
-        if placed > 0 and (args.segmentation_only or args.instance_only or not args.images_only):
+        # Generate masks depending on mode, skip if json-only
+        if placed > 0 and not args.json_only and (args.segmentation_only or args.instance_only or not args.images_only):
             # Overlay segmentation and instance masks using actual symbol shapes
             base_seg_path = os.path.join(os.path.dirname(IMAGES_DIR), 'segmentation', fname.replace('.png','_seg.png'))
             base_inst_path = os.path.join(os.path.dirname(IMAGES_DIR), 'instance', fname.replace('.png','_inst.png'))
@@ -819,7 +865,7 @@ def main():
                             json.dump(sd, f, ensure_ascii=False)
                     print({'checkpoint': processed_counter, 'out_json_mode': 'per-shard', 'count': len(shards)})
                 else:
-                    out_json_ck = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+                    out_json_ck = os.path.join(OUT_JSONLAR, single_out_basename or 'deepscores_train.json')
                     data['annotations'] = anns_out
                     with open(out_json_ck, 'w', encoding='utf-8') as f:
                         json.dump(data, f, ensure_ascii=False)
@@ -898,7 +944,7 @@ def main():
                 print({'total_placed': total_placed, 'out_images': OUT_IMAGES, 'out_json': out_json})
         else:
             data['annotations'] = anns_out
-            out_json = os.path.join(OUT_JSONLAR, 'deepscores_train.json')
+            out_json = os.path.join(OUT_JSONLAR, single_out_basename or 'deepscores_train.json')
             with open(out_json, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False)
             # Also write palette mapping for segmentation to understanding_dataset

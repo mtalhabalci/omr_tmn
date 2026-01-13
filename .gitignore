@@ -266,3 +266,4 @@ venv/
 # Dataset folders to exclude
 ds2_dense/
 ds2_dense_tmn/
+understanding_dataset/
